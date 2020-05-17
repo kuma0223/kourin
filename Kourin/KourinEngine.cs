@@ -18,7 +18,7 @@ namespace Kourin
         /// <summary>
         /// 関数テーブル
         /// </summary>
-        private Dictionary<string, IKourinFunction> functionTable = new Dictionary<string, IKourinFunction>();
+        private Dictionary<string, IKourinFunction> functionTable = new Dictionary<string, IKourinFunction>(StringComparer.OrdinalIgnoreCase);
         
         /// <summary>
         /// 変数テーブル
