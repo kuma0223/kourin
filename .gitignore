@@ -1,3 +1,15 @@
+.vs/
 bin/
 obj/
+
+*.pfx
+*.png
+*.jpg
+*.bmp
+*.exe
+*.dll
+*.suo
+*.sln
+*.user
+*.db
 *.log

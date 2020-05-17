@@ -38,7 +38,7 @@ namespace TestWindow
 
             //DLLからプラグインの登録
             var MyPath = System.IO.Path.GetDirectoryName(Environment.GetCommandLineArgs()[0]);
-            foreach (var path in System.IO.Directory.GetFiles(MyPath + "/../Plugin")) {
+            foreach (var path in System.IO.Directory.GetFiles(MyPath + "/Plugin")) {
                 engine.loadPluginDll(path);
             }
         }
