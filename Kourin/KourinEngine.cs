@@ -345,35 +345,58 @@ namespace Kourin
                 {
                     int stIndex = i;
                     if (c == '-') { i++; }
-                    for(var cc=charAt(i); cc!='\0' && cc!=' ' && !Operator.chars.Contains(cc) && cc!=')'; i++,cc=charAt(i));
+
+                    for(var cc = charAt(i);
+                        cc!='\0' && cc!=' ' && !Operator.isOerator(cc) && cc != ')' && cc != ':';
+                        i++, cc = charAt(i));
+
                     ret.Add(new Token(TokenType.NUM, script.Substring(stIndex, i - stIndex)));
                 }
                 //--------------------関数 OR 関数宣言
-                else if (c == '[' || c == '{' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'))
+                else if (c == '[' || c == '{' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c==':')
                 {
+                    bool isPipe = false;
+                    if(c == ':')
+                    {   //パイプ
+                        i++;
+                        while(charAt(i) == ' ') i++;
+                        isPipe = true;
+                    }
+
                     int stindex = i;
-                    for (var cc=charAt(i);
-                        cc!='\0' && cc!=' ' && cc!=StrChar && cc!='[' && cc!='{' && !Operator.chars.Contains(cc);
-                        i++, cc=charAt(i));
+
+                    Func<char, bool> isEnableChar = x => {
+                        if (x == ' ') return false;
+                        if (x == '[') return false;
+                        if (x == '{') return false;
+                        if (x == ':') return false;
+                        if (x == '\0') return false;
+                        if (x == StrChar) return false;
+                        if (Operator.isOerator(x)) return false;
+                        return true;
+                    };
+                    while (isEnableChar(charAt(i))) { i++; }
                     var funcName = script.Substring(stindex, i - stindex);
 
-                    for(var cc=charAt(i); cc==' '; i++, cc=charAt(i)); //[{の前の空白は許す
+                    //[{の前の空白は許す
+                    while (charAt(i) == ' '){ i++; };
                     
-                    if (charAt(i)=='\0' || script[i] != '[' &&  script[i] != '{')
+                    if (charAt(i)=='\0' || script[i] != '[' && script[i] != '{')
                     {   //名称のみ=引数なし関数呼び出し
-                        ret.Add(new FunctionToken(funcName, funcName));
+                        ret.Add(new FunctionToken(funcName, funcName, isPipe));
                     }
                     else if(script[i] == '[')
                     {   //関数呼び出し文
                         string[] args;
                         i = skipBlock(script, i, '[', ']', ',', out args);
                         var text = script.Substring(stindex, i-stindex);
-                        var token = new FunctionToken(funcName, text);
+                        var token = new FunctionToken(funcName, text, isPipe);
                         token.args.AddRange(args);
                         ret.Add(token);
                     }
                     else if(script[i] == '{')
                     {   //関数作成文
+                        if(isPipe) throw new Exception("関数宣言にパイプを繋げることはできません。");
                         string[] box;
                         i = skipBlock(script, i, '{', '}', -1, out box);
                         var text = script.Substring(stindex, i-stindex);
@@ -382,10 +405,10 @@ namespace Kourin
                     }
                 }
                 //--------------------演算子
-                else if (Operator.chars.Contains(c))
+                else if (Operator.isOerator(c))
                 {
                     string tmpstr;
-                    if (Operator.chars.Contains(charAt(i + 1)))
+                    if (Operator.isOerator(charAt(i + 1)))
                     {   //== != >= <= && || など
                         tmpstr = script.Substring(i, 2);
                         i += 2;
@@ -413,24 +436,33 @@ namespace Kourin
                 else if (c == '$')
                 {
                     int stindex = i;
-                    for(var cc=charAt(i);
-                        cc!='\0' && cc!=' ' && cc!=StrChar && !Operator.chars.Contains(cc) && cc!='(' && cc!=')';
-                        i++,cc=charAt(i));
+
+                    var dcount = 0;
+                    while(charAt(i)=='$') { i++; dcount++; }
+
+                    Func<char, bool> isEnableChar = x => {
+                        if (x == ' ') return false;
+                        if (x == '(') return false;
+                        if (x == ')') return false;
+                        if (x == ':') return false;
+                        if (x == '\0') return false;
+                        if (x == StrChar) return false;
+                        if (Operator.isOerator(x)) return false;
+                        return true;
+                    };
+                    
+                    while(isEnableChar(charAt(i))) i++;
+
                     var text = script.Substring(stindex, i - stindex);
-                    var name = text.Substring(1, text.Length-1);
-                    var names = name.Split(':');
-                    var token = new VariableToken(names.Last(), text);
-                    if(token.varName == "") throw new KourinException("$の後に変数名がありません。");
-                    //フラグ検索
-                    if(names.Length >= 2) {
-                        string[] flags = new string[]{ "scoped", "global" };
-                        for (var k = 0; k < names.Length - 1; k++) {
-                            var indexof = Array.IndexOf(flags, names[k]);
-                            if     (indexof==0) token.isScoped=true;
-                            else if(indexof==1) token.isGlobal=true;
-                            else throw new KourinException("不明な変数フラグ'"+names[k]+"'です。");
-                        }
-                    }
+                    var name = text.Substring(dcount, text.Length- dcount);
+                    var token = new VariableToken(name, text);
+
+                    if (token.varName == "") throw new KourinException("$の後に変数名がありません。");
+                    if (dcount > 2) throw new KourinException($"不正な$の連続'{text}'です。");
+
+                    token.isGlobal = dcount == 2;
+                    token.isScoped = dcount == 1;
+
                     ret.Add(token);
                 }
                 else
@@ -501,6 +533,12 @@ namespace Kourin
                     if (i == 0 || i == tokens.Count - 1) { throw new KourinException("演算子の位置が不正です。'" + t.text + "'"); }
                     else if (tokens[i - 1].type == TokenType.LPAR) { throw new KourinException("演算子の位置が不正です。'" + t.text + "'"); }
                     else if (tokens[i - 1].type == TokenType.OPE) { throw new KourinException("演算子が連続しています。'" + t.text + "'"); }
+                }
+                else if(t.type == TokenType.FUNC && (t as FunctionToken).isPipe)
+                {
+                    if (!(i > 0 && (tokens[i-1].type == TokenType.RPAR || isOperand(tokens[i - 1])))) {
+                        throw new KourinException("関数パイプの位置が不正です。'" + t.text + "'");
+                    }
                 }
                 else if(isOperand(t))
                 {
@@ -670,7 +708,9 @@ namespace Kourin
                 }
                 else if (token.type == TokenType.FUNC)
                 {   //関数を実行して結果をスタック
-                    stack.Push(callFunction(token as FunctionToken));
+                    var ft = token as FunctionToken;
+                    if(ft.isPipe) stack.Push( callFunction(ft, getVarIfItIsVar(stack.Pop())) );
+                    else stack.Push(callFunction(ft, null));
                 }
                 else if (token.type == TokenType.OPE)
                 {
@@ -724,35 +764,45 @@ namespace Kourin
         /// <summary>
         /// 関数呼び出し
         /// </summary>
-        private object callFunction(FunctionToken token)
+        private object callFunction(FunctionToken token, object pipedObj)
         {
             var args = token.args;
             var fname = token.funcName;
-            object[] args_obj= new object[args.Count];
-            if (fname == "IF")
+            object[] args_obj = new object[args.Count + (token.isPipe ? 1 : 0)];
+
+            if (fname.Equals("IF", StringComparison.OrdinalIgnoreCase))
             {
                 //特別関数IF：引数を後演算（IF[$A==NULL,0,$A*5]のような式がエラーにならないよう）
-                if (args.Count > 0) args_obj[0] = rideOne(args[0]); //条件は先
+                if (token.isPipe) throw new KourinException("IF関数にパイプは利用できません。");
+
+                //条件のみ先に実行
+                if (args.Count > 0) args_obj[0] = rideOne(args[0]);
                 if (args.Count > 1) args_obj[1] = args[1];
                 if (args.Count > 2) args_obj[2] = args[2];
                 return rideOne(callFunction(fname, args_obj).ToString());
             }
-            else if (fname == "REPEAT")
-            {   
+            else if (fname.Equals("REPEAT", StringComparison.OrdinalIgnoreCase))
+            {
                 //特別関数：第二引数の文を繰り返し実行
-                if (args.Count > 0) args_obj[0] = rideOne(args[0]); //回数条件
-                callFunction(fname, args_obj); //引数チェックとして呼ぶ
+                if (token.isPipe) throw new KourinException("REPEAT関数にパイプは利用できません。");
+
+                //回数条件
+                if (args.Count > 0) args_obj[0] = rideOne(args[0]);
+                //引数チェックとして呼ぶ
+                callFunction(fname, args_obj);
                 //繰り返し実行
                 object ret = null;
-                for(var c=0; c<(int)args_obj[0]; c++){
+                for(var c=0; c < (int)args_obj[0]; c++){
                     ret=rideOne(args[1]);
                     if(ret is ReturnedObject) break;
                 }
                 return ret;
             }
-            else if (fname == "WHILE")
+            else if (fname.Equals("WHILE", StringComparison.OrdinalIgnoreCase))
             {
                 //特別関数：第一引数の実行結果がtrueのあいだ第二引数の文を繰り返し実行
+                if(token.isPipe) throw new KourinException("WHILE関数にパイプは利用できません。");
+
                 callFunction(fname, args_obj); //引数チェックのみ
                 object ret = null;
                 while (true) {
@@ -765,17 +815,19 @@ namespace Kourin
                 }
                 return ret;
             }
-            else if (fname == "TOSCRIPT")
+            else if (fname.Equals("TOSCRIPT", StringComparison.OrdinalIgnoreCase))
             {
                 //特別関数：引数内のスクリプトをそのまま文字列として返す
-                if(args.Count > 0) return args[0];
+                if (token.isPipe) throw new KourinException("TOSCRIPT関数にパイプは利用できません。");
+                if (args.Count > 0) return args[0];
                 else return "";
             }
             else
             {
                 //引数部分を再帰で先に演算する
-                for (int argIndex = 0; argIndex < args.Count; argIndex++)
-                    args_obj[argIndex] = rideOne(args[argIndex]);
+                if (token.isPipe) args_obj[0] = pipedObj;
+                for (int i = 0; i < args.Count; i++)
+                    args_obj[token.isPipe ? i+1 : i] = rideOne(args[i]);
 
                 return callFunction(fname, args_obj);
             }
@@ -866,9 +918,11 @@ namespace Kourin
         {
             public string funcName;
             public List<string> args;
-            public FunctionToken(string funcName, string text) : base(TokenType.FUNC, text)
+            public bool isPipe;
+            public FunctionToken(string funcName, string text, bool isPipe) : base(TokenType.FUNC, text)
             {
                 this.funcName = funcName;
+                this.isPipe = isPipe;
                 args = new List<string>(5);
             }
         }
@@ -892,7 +946,8 @@ namespace Kourin
             public int priority;
             public string function;
 
-            public static char[] chars = { '+', '-', '*', '/', '%', '|', '&', '=', '!', '>', '<', ';' };
+            private static char[] chars = { '+', '-', '*', '/', '%', '|', '&', '=', '!', '>', '<', ';' };
+            private static HashSet<char> charshash = new HashSet<char>(chars);
 
             public static Operator[] operators = {
                      new Operator(){ str="*",  priority=5, function=PresetFunctions.mul.name},
@@ -922,6 +977,10 @@ namespace Kourin
             public static Operator parse(string str)
             {
                 return operators.FirstOrDefault(item => item.str == str);
+            }
+            public static bool isOerator(char c)
+            {
+                return charshash.Contains(c);
             }
         }
     }
