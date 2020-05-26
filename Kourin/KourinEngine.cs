@@ -38,7 +38,7 @@ namespace Kourin
         /// <summary>
         /// 登録済み関数一覧
         /// </summary>
-        private string[] functions
+        public string[] functions
         {
             get { return functionTable.Keys.ToArray(); }
         }
