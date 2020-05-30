@@ -589,7 +589,8 @@ namespace Kourin
                     i++;
                 }
 
-                list.Add(script.Substring(k, i-k));
+                var s = script.Substring(k, i - k);
+                if(s != "" && s != " ") { list.Add(s); }
                 if(matchEnd) { i++; break; }
                 if(matchSep) { i++; }
             }
