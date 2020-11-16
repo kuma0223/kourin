@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection.Emit;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Kourin
 {
@@ -43,6 +45,9 @@ namespace Kourin
             get { return functionTable.Keys.ToArray(); }
         }
 
+        /// <summary>
+        /// 同時にひとつのスクリプトを実行できるインスタンスを生成します。
+        /// </summary>
         public KourinEngine()
         {
             setFunction(PresetFunctions.executionAll);
@@ -179,28 +184,66 @@ namespace Kourin
                 string str;
                 while((str = reader.ReadLine()) != null) {
                     line++;
-                    str = fairScriptText(str); //コメントと前後空白の削除
+
+                    LINESTART:
+
+                    //コメントと前後空白の削除
                     //スタックトレースのため行が空でも削除してはいけない
+                    bool isHereDoc;
+                    str = fairScriptText(str, out isHereDoc);
+                    
+                    //整形済みテキスト開始行の場合は終了行までを含める
+                    if (isHereDoc) {
+                        buf.Append(str);
+                        buf.Append('\n');
+
+                        var sb = new StringBuilder(128);
+                        int co = 0;
+
+                        while (true) {
+                            str = reader.ReadLine();
+                            line++;
+
+                            if (str == null) { 
+                                throw new KourinException("ヒア文字列が閉じられていません。");
+                            }
+                            if (str.StartsWith($"{StrChar}$")) {
+                                buf.Append(sb);
+                                buf.Append($"\n{StrChar}$");
+                                str = str.Substring(2);
+                                goto LINESTART;
+                            }
+
+                            if (co > 0) sb.AppendLine();
+                            sb.Append(str);
+                            co++;
+                        }
+                    }
 
                     //行末が{の場合、行頭が}の行までを実行単位に含める
                     if(str.Length>0 && str.Last() == '{') bcount++;
                     if(str.Length>0 && str.First() == '}') bcount--;
 
-                    if(bcount==0) {
-                        if (str.Length>0 && str.Last() == '_') {
-                            //行末が_の場合は次行へ継続
-                            buf.Append(str.Substring(0, str.Length-1));
-                        } else {
-                            buf.Append(str);
-                            int tokencount;
-                            var tmp=rideOne(buf.ToString(), out tokencount);
-                            if(tokencount > 0) ret = tmp; //空行の戻り値は無視
-                            if(ret is ReturnedObject) break; //実行結果がRETURNの場合その行で抜ける
-                            buf.Clear();
-                        }
-                    }else{
-                        buf.AppendLine(str);
+                    if(bcount != 0) {
+                        buf.Append(str);
+                        buf.Append('\n');
+                        continue;
                     }
+
+                    //行末が_の場合は次行へ継続
+                    if (str.Length > 0 && str.Last() == '_') {
+                        buf.Append(str.Substring(0, str.Length - 1));
+                        continue;
+                    }
+
+                    //スクリプト実行
+                    buf.Append(str);
+
+                    int tokencount;
+                    var tmp = rideOne(buf.ToString(), out tokencount);
+                    if (tokencount > 0) ret = tmp; //空行の戻り値は無視
+                    if (ret is ReturnedObject) break; //実行結果がRETURNの場合その行で抜ける
+                    buf.Clear();
                 }
                 if(bcount!=0) throw new KourinException("}が不足しています。");
             } catch(KourinException ex) {
@@ -229,7 +272,7 @@ namespace Kourin
             if (script.Length==0) { return null; }
             
             //字句解析
-            checkError(script);
+            //checkError(script); トークン分割前のチェックは処理が分散するので辞め
             var tokens = splitScript(script);
             if (tokens.Count == 0) { return null; }
             tokenCount = tokens.Count;
@@ -257,8 +300,10 @@ namespace Kourin
         /// <summary>
         /// コメントとスペースを削除整理する
         /// </summary>
-        private string fairScriptText(string script)
+        private string fairScriptText(string script, out bool inHereDoc)
         {
+            inHereDoc = false;
+
             StringBuilder buf = new StringBuilder(script.Length);
             int i=0;
             int len=script.Length;
@@ -272,10 +317,14 @@ namespace Kourin
             for(; i<len; i++) {
                 var c = script[i];
                 var cnext = i<len-1 ? script[i+1] : '\0';
+                var cnext2 = i<len-2 ? script[i+2] : '\0';
                 var lastadd = buf.Length>0 ? buf[buf.Length-1] : '\0';
+
                 if(isstr) {
                     buf.Append(c);
-                    if(isStrEndChar(script, i)) isstr=false;
+                    if(isStrEndChar(script, i)){
+                        isstr=false;
+                    }
                 } else {
                     if(c=='/' && cnext=='/') {
                         break; //行コメント
@@ -285,17 +334,26 @@ namespace Kourin
                         if(lastadd!=' ') buf.Append(' ');
                     }
                     else if(c==StrChar) {
-                        buf.Append(c); isstr=true;
+                        buf.Append(c);
+                        isstr=true;
+                        inHereDoc = false;
                     }
-                    else { buf.Append(c); }
+                    else if(c == '$' && cnext == StrChar) {
+                        //ヒア文字列の開始
+                        buf.Append(c);
+                        buf.Append(cnext);
+                        i++;
+                        inHereDoc = true;
+                    }
+                    else {
+                        buf.Append(c);
+                        inHereDoc = false;
+                    }
                 }
             }
             //行末スペース削除（コメント削除によりでた可能性）
             for(i=0; i<buf.Length && buf[buf.Length-i-1]==' '; i++);
             buf.Remove(buf.Length-i, i);
-
-            //文字列リテラル中に終わってる
-            if(isstr) throw new KourinException("\"の対応が取れていません。");
 
             return buf.ToString();
         }
@@ -320,23 +378,55 @@ namespace Kourin
                 if (c == ' ') {
                     i++; continue;
                 }
+                //--------------------成形済み文字列
+                else if (c == '$' && charAt(i+1) == StrChar && charAt(i+2) == '\n')
+                {
+                    StringBuilder buf = new StringBuilder(128);
+                    i += 3;
+                    while (true) {
+                        var cc = charAt(i);
+                        var next1 = charAt(i+1);
+                        var next2 = charAt(i+2);
+
+                        if (cc == '\0') {
+                            throw new KourinException("ヒア文字列が閉じられていません。");
+                        } else if(cc == '\n' && next1 == StrChar && next2 == '$') {
+                            i+=3;
+                            break;
+                        } else {
+                            buf.Append(cc);
+                            i++;
+                        }
+                    }
+                    ret.Add(new Token(TokenType.STR, buf.ToString()));
+                }
                 //--------------------文字列
                 else if (c == StrChar)
                 {
                     StringBuilder buf = new StringBuilder(16);
                     i++;
-                    while(true){ //!isStrEndChar(script,i)) {
-                        var cc=script[i];
-                        if(cc==StrChar) break; //エスケープは飛ばしてるので終了判定に考慮不要
-                        if (script[i] == EscChar) { //エスケープ処理
-                            var next = script[i+1];
-                            if (EscTable.ContainsKey(next)) { buf.Append(EscTable[next]); i+=2; }
-                            else { throw new KourinException("不明なエスケープ文字'"+EscChar+next+"'です。"); }
+                    while(true){
+                        var cc = charAt(i);
+                        i++;
+
+                        if (cc == '\0') {
+                            throw new KourinException("文字列が閉じられていません。");
+                        } else if (cc==StrChar) {
+                            //終了判定(エスケープは飛ばしてるので考慮不要)
+                            break;
+                        } else if (cc == EscChar) {
+                            //エスケープ処理
+                            var next = charAt(i);
+                            i++;
+                            if (EscTable.ContainsKey(next)) {
+                                buf.Append(EscTable[next]);
+                            } else {
+                                throw new KourinException($"不明なエスケープ文字'{EscChar+next}'です。");
+                            }
                         } else {
-                            buf.Append(cc); i++;
+                            buf.Append(cc);
                         }
                     }
-                    i++;
                     ret.Add(new Token(TokenType.STR, buf.ToString()));
                 }
                 //--------------------数値（リテラル）
@@ -400,7 +490,7 @@ namespace Kourin
                         string[] box;
                         i = skipBlock(script, i, '{', '}', -1, out box);
                         var text = script.Substring(stindex, i-stindex);
-                        var token = new MakeFunctionToken(funcName, box[0], text);
+                        var token = new MakeFunctionToken(funcName, box.Any() ? box[0] : "", text);
                         ret.Add(token);
                     }
                 }
@@ -478,6 +568,7 @@ namespace Kourin
             return ret;
         }
 
+        /*
         /// <summary>
         /// 字句解析前チェック
         /// </summary>
@@ -510,6 +601,7 @@ namespace Kourin
                 throw new KourinException("括弧()[]{}の対応がとれていません。");
             }
         }
+        */
 
         /// <summary>
         /// 字句解析後チェック
@@ -524,6 +616,8 @@ namespace Kourin
                     || t.type == TokenType.VAR
                     || t.type == TokenType.MKFUNC;
             });
+
+            int perCount = 0;
 
             for (var i = 0; i < tokens.Count; i++ )
             {
@@ -547,14 +641,20 @@ namespace Kourin
                 }
                 else if (t.type == TokenType.LPAR)
                 {
+                    perCount++;
                     if (i > 0 && (tokens[i-1].type == TokenType.RPAR || isOperand(tokens[i-1])))
                         throw new KourinException("リテラル/関数/変数が連続しています。'" + t.text + "'");
                 }
                 else if (t.type == TokenType.RPAR)
                 {
+                    perCount--;
                     if (i > 0 && tokens[i-1].type == TokenType.LPAR)
                         throw new KourinException("空の()です。");
                 }
+            }
+
+            if(perCount != 0) {
+                throw new KourinException("()の対応がとれていません。");
             }
         }
         
@@ -576,16 +676,33 @@ namespace Kourin
 
             i++;
             bool matchEnd=false;
-            while (i<script.Length){
-                int count=0; int k=i;
+            while (i < script.Length){
+                int count=0;
+                int k=i;
                 bool matchSep=false;
+
                 while(i<script.Length) {
                     var c = script[i];
-                    if(c==separater && count==0) { matchSep=true; break; }
+                    var c2 = i < script.Length - 1 ? script[i + 1] : '\0';
+                    var c3 = i < script.Length - 2 ? script[i + 2] : '\0';
+                    if (c==separater && count==0) { matchSep=true; break; }
                     else if(c==eChar && count==0) { matchEnd=true; break; }
                     else if(c==sChar) count++;
                     else if(c==eChar) count--;
-                    if(c==StrChar){ for(i=i+1; !isStrEndChar(script, i); i++); }
+                    else if(c==StrChar) {
+                        for(i=i+1; ; i++) {
+                            if(isStrEndChar(script, i)) break;
+                            if(i >= script.Length) throw new KourinException("文字列の終了を検出できませんでした。");
+                            //これが出たらバグ
+                        }
+                    }
+                    else if(c=='$' && c2==StrChar && c3=='\n') {
+                        for(i=i+3; ; i++) {
+                            if(script[i - 2] == '\n' && script[i - 1] == StrChar && script[i] == '$') break;
+                            if (i >= script.Length) throw new KourinException("ヒア文字列の終了を検出できませんでした。");
+                            //これが出たらバグ
+                        }
+                    }
                     i++;
                 }
 
@@ -611,7 +728,7 @@ namespace Kourin
             for(i=i-1; i>=0 && text[i]==EscChar; i--) count++;
             return count % 2 == 0; //\の数によりエスケープかどうか決まる
         }
-       
+
         //◆━━━━━━━━━━━━━━━━━━━━━━━━━━━━◆
 
         /// <summary>
@@ -822,6 +939,27 @@ namespace Kourin
                 if (token.isPipe) throw new KourinException("TOSCRIPT関数にパイプは利用できません。");
                 if (args.Count > 0) return args[0];
                 else return "";
+            }
+            else if (fname.Equals("DEPLOY", StringComparison.OrdinalIgnoreCase))
+            {
+                //特別関数：文字列に変数を展開する
+                if(token.isPipe) args_obj[0] = pipedObj;
+                else if(args.Count > 0) args_obj[0] = rideOne(args[0]);
+
+                if(!(args_obj[0] is string)) throw new KourinException("DEPLOY関数の引数が文字列ではありません。");
+
+                var s = (string)args_obj[0];
+                var sb = new StringBuilder(s.Length);
+                int pre = 0;
+                var ptn = @"{\s*(\$\$?[^\s\$\{\}]+)\s*}";
+                foreach (Match m in Regex.Matches(s, ptn)) {
+                    var val = rideOne(m.Value);
+                    sb.Append(s.Substring(pre, m.Index-pre));
+                    sb.Append(val);
+                    pre = m.Index + m.Length;
+                }
+                sb.Append(s.Substring(pre, s.Length-pre));
+                return sb.ToString();
             }
             else
             {
