@@ -1,0 +1,13 @@
+﻿$s = $" //コメント
+aiui"eo
+kaki\nku ke ko
+"$
+
+$s = $s & $"
+ "$sasisu
+"$
+
+$$x = 123
+$t = "nani{$$x}nu":Deploy
+
+$s & $t

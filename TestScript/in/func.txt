@@ -1,0 +1,11 @@
+﻿
+func{
+	$local = "zzz"
+	$ret = $local & ($args0 + $args1 + $$global)
+	return[$ret]
+}
+
+$$global = 1
+$local = "xxx"
+
+Func[100, 200] & $local;
